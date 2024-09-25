@@ -1,99 +1,136 @@
-using System;
 using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 
 namespace Monoprim;
 
-public sealed class PrimativeBatch :IDisposable
+/// <summary>
+/// A "primitive" (pun not intended) cousin to <c>SpriteBatch</c> for drawing primitives.
+/// e.g. Triangles, polygons, rectangles, ect.
+/// </summary>
+public class PrimitiveBatch
 {
-    public readonly GraphicsDevice GraphicsDevice;
-    private bool _hasBegan = false;
-    private BasicEffect _effect;
-    private List<Drawable> _drawables = [];
-    private bool _disposed = false;
+    private GraphicsDevice _graphicsDevice;
+    private readonly BasicEffect _basicEffect;
 
-    public PrimativeBatch(GraphicsDevice graphicsDevice)
+    private int _primitiveCount;
+    private readonly List<VertexBuffer> _vertexBuffers;
+    private readonly List<IndexBuffer> _indexBuffers;
+    private readonly List<Effect> _effects;
+
+    private const int VerticesPerTriangle = 3;
+
+    public PrimitiveBatch(GraphicsDevice graphicsDevice)
     {
-        GraphicsDevice = graphicsDevice;
-        ArgumentNullException.ThrowIfNull(graphicsDevice);
-
-        var data = new Color[1];
-        Array.Fill(data, Color.White);
-        var texture = new Texture2D(graphicsDevice, 1, 1);
-        texture.SetData(data);
-
-        _effect = new BasicEffect(graphicsDevice);
-        _effect.TextureEnabled = true;
-        _effect.Texture = texture;
-
-        _effect.Projection = Matrix.CreateOrthographic(
-            GraphicsDevice.Viewport.Width,
-            GraphicsDevice.Viewport.Height,
-            0.001F,
-            100.0F
-        );
-        _effect.View = Matrix.Identity;
-        _effect.World = Matrix.Identity;
-    }
-
-    public void Dispose()
-    {
-        this.Dispose(true);
-        GC.SuppressFinalize(this);
-    }
-
-    private void Dispose(bool disposing)
-    {
-        if (disposing && !_disposed)
+        _graphicsDevice = graphicsDevice;
+        _basicEffect = new(_graphicsDevice)
         {
-            if (_effect != null)
-                _effect.Dispose();
+            VertexColorEnabled = true,
 
-            _disposed = true;
-        }
+            View = Matrix.CreateLookAt(
+                new Vector3(0, 0, -1),
+                new Vector3(0, 0, 0),
+                new Vector3(0, -1, 0)
+            ),
+
+            World = Matrix.CreateTranslation(
+                (float)-_graphicsDevice.Viewport.Width / 2,
+                (float)-_graphicsDevice.Viewport.Height / 2,
+                0.0F
+            ),
+
+            Projection = Matrix.CreateOrthographic(
+                _graphicsDevice.Viewport.Width,
+                _graphicsDevice.Viewport.Height,
+                1.0F,
+                100.0F
+            )
+        };
+
+        _vertexBuffers = new();
+        _indexBuffers = new();
+        _effects = new();
     }
 
-    #nullable enable
-    private void Prepare(
-        RenderTarget2D ?renderTarget = null,
-        BlendState ?blendState = null,
-        DepthStencilState ?depthStencilState = null,
-        RasterizerState ?rasterizerState = null)
-    {
-        GraphicsDevice.BlendState = blendState ?? BlendState.Opaque;
-        GraphicsDevice.DepthStencilState = depthStencilState ?? DepthStencilState.Default;
-        GraphicsDevice.RasterizerState = rasterizerState ?? RasterizerState.CullNone;
-        if (renderTarget != null)
-        {
-            GraphicsDevice.SetRenderTarget(renderTarget);
-        }
-    }
-
-    /// <summary>
-    /// Renders every primitive added
-    /// </summary>
-    /// <param name="viewMatrix"></param>
-    /// <param name="restorePreviousState"></param>
-    /// <param name="renderTarget"></param>
-    /// <param name="blendState"></param>
-    /// <param name="depthStencilState"></param>
-    /// <param name="rasterizerState"></param>
     public void Present(
-        Matrix? viewMatrix = null,
-        bool restorePreviousState = true,
-        RenderTarget2D ?renderTarget = null,
-        BlendState ?blendState = null,
-        DepthStencilState ?depthStencilState = null,
-        RasterizerState ?rasterizerState = null
-        )
+        BlendState blendState = null,
+        SamplerState samplerState = null,
+        DepthStencilState depthStencilState = null,
+        RasterizerState rasterizerState = null
+    )
     {
-        var previousRenderTarget = renderTarget;
-        var previousBlendState = blendState;
-        var previousDepthStencilState = depthStencilState;
-        var previousRasterizerState = rasterizerState;
+        if (_primitiveCount == 0)
+        {
+            return;
+        }
 
-        Prepare(renderTarget, blendState, depthStencilState, rasterizerState);
+        #region Save GraphicsDevice state.
+        var previousBlendState = _graphicsDevice.BlendState;
+        var previousSamplerState = _graphicsDevice.SamplerStates[0];
+        var previousDepthStencilState = _graphicsDevice.DepthStencilState;
+        var previousRasterizerState = _graphicsDevice.RasterizerState;
+        #endregion
+
+        SetGraphicsDeviceState(_graphicsDevice, blendState ?? BlendState.Opaque, samplerState ?? SamplerState.PointClamp,depthStencilState ?? DepthStencilState.Default, rasterizerState ?? RasterizerState.CullCounterClockwise );
+
+        Render(_graphicsDevice, _basicEffect, _vertexBuffers.ToArray(), _indexBuffers.ToArray(), _primitiveCount, _effects.ToArray());
+
+        //Now we can restore the previous state the GraphicsDevice was in.
+        SetGraphicsDeviceState(_graphicsDevice, previousBlendState, previousSamplerState, previousDepthStencilState, previousRasterizerState);
     }
-#nullable disable
+
+    private static void SetGraphicsDeviceState(GraphicsDevice graphicsDevice, BlendState blendState, SamplerState samplerState, DepthStencilState depthStencilState, RasterizerState rasterizerState)
+    {
+        graphicsDevice.BlendState = blendState;
+        graphicsDevice.SamplerStates[0] = samplerState;
+        graphicsDevice.DepthStencilState = depthStencilState;
+        graphicsDevice.RasterizerState = rasterizerState;
+    }
+
+    public void Draw(Primitive primitive)
+    {
+        _vertexBuffers.Add(primitive.GetVertexBuffer());
+        _indexBuffers.Add(primitive.GetIndexBuffer());
+        _effects.Add(primitive.GetEffect());
+        _primitiveCount++;
+    }
+
+    private static void Render(GraphicsDevice graphicsDevice, Effect baseEffect, VertexBuffer []vertexBuffers, IndexBuffer []indexBuffers, int primitiveCount,Effect []primitiveEffects)
+    {
+        foreach (var baseEffectPass in baseEffect.CurrentTechnique.Passes)
+        {
+            baseEffectPass.Apply();
+            for (var primitiveIndex = 0; primitiveIndex < primitiveCount; primitiveIndex++)
+            {
+                graphicsDevice.Indices = indexBuffers[primitiveIndex];
+                graphicsDevice.SetVertexBuffer(vertexBuffers[primitiveIndex]);
+                var currentPrimitiveCount = VerticesPerTriangle / vertexBuffers[primitiveIndex].VertexCount;
+                var primitiveEffect = primitiveEffects[primitiveIndex];
+
+                if (primitiveEffect != null)
+                {
+                    foreach (var primitiveEffectPass in primitiveEffect.CurrentTechnique.Passes)
+                    {
+                        primitiveEffectPass.Apply();
+                    }
+                }
+                else
+                {
+                    graphicsDevice.DrawIndexedPrimitives
+                    (
+                        PrimitiveType.TriangleList,
+                        0,
+                        0,
+                        currentPrimitiveCount
+                    );
+                }
+            }
+        }
+    }
+
+
+    public ref GraphicsDevice GetGraphicsDevice()
+    {
+        return ref _graphicsDevice;
+    }
 }
